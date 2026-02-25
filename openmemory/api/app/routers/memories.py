@@ -15,7 +15,7 @@ from app.models import (
     User,
 )
 from app.schemas import MemoryResponse
-from app.utils.memory import _RateLimitEscape, add_memory_with_fallback, get_memory_client
+from app.utils.memory import add_memory_with_fallback, get_memory_client
 from app.utils.permissions import check_memory_access_permissions
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_pagination import Page, Params
@@ -319,9 +319,6 @@ async def create_memory(
                 # Return the first memory (for API compatibility)
                 # but all memories are now saved to the database
                 return created_memories[0]
-    except _RateLimitEscape as e:
-        logging.error(f"Rate limited creating memory: {e.original}")
-        return {"error": "rate limited on all models"}
     except Exception as qdrant_error:
         logging.warning(f"Qdrant operation failed: {qdrant_error}.")
         # Return a json response with the error

@@ -389,7 +389,7 @@ class _RateLimitEscape(BaseException):
         super().__init__(str(original))
 
 
-def _disable_sdk_retries(client):
+def _patch_rate_limit_handling(client):
     """
     Patch a Memory client's LLM to bypass both SDK retries and mem0's
     `except Exception` swallowing of RateLimitError.
@@ -443,7 +443,7 @@ def get_memory_client(custom_instructions: str = None):
             print(f"Initializing memory client with config hash: {current_config_hash}")
             try:
                 _memory_client = Memory.from_config(config_dict=config)
-                _disable_sdk_retries(_memory_client)
+                _patch_rate_limit_handling(_memory_client)
                 _config_hash = current_config_hash
                 print("Memory client initialized successfully")
             except Exception as init_error:
@@ -476,7 +476,7 @@ def get_fallback_client():
         if _fallback_client is None or _fallback_config_hash != current_hash:
             logging.info(f"Initializing fallback memory client with model: {FALLBACK_MODEL}")
             _fallback_client = Memory.from_config(config_dict=config)
-            _disable_sdk_retries(_fallback_client)
+            _patch_rate_limit_handling(_fallback_client)
             _fallback_config_hash = current_hash
             logging.info("Fallback memory client initialized successfully")
 
@@ -491,25 +491,34 @@ def add_memory_with_fallback(memory_client, text, **kwargs):
     """
     Add memory using the primary client, falling back to the smaller model
     if the primary model is rate-limited.
+
+    Raises RuntimeError (not _RateLimitEscape) so callers' existing
+    ``except Exception`` blocks handle it naturally.
     """
     try:
         return memory_client.add(text, **kwargs)
-    except (RateLimitError, _RateLimitEscape):
+    except _RateLimitEscape:
         logging.warning(
             f"Primary model ({PRIMARY_MODEL}) rate limited. "
             f"Falling back to {FALLBACK_MODEL}..."
         )
         fallback = get_fallback_client()
         if fallback is None:
-            raise
+            raise RuntimeError(
+                f"Primary model ({PRIMARY_MODEL}) rate limited "
+                f"and fallback client unavailable"
+            )
         try:
             return fallback.add(text, **kwargs)
-        except (RateLimitError, _RateLimitEscape):
+        except _RateLimitEscape:
             logging.error(
                 f"Both models rate limited for memory add "
                 f"({PRIMARY_MODEL} and {FALLBACK_MODEL}). Memory not saved."
             )
-            raise
+            raise RuntimeError(
+                f"Both models rate limited "
+                f"({PRIMARY_MODEL} and {FALLBACK_MODEL}). Memory not saved."
+            )
 
 
 def get_default_user_id():

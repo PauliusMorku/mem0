@@ -8,7 +8,6 @@ from app.utils.prompts import MEMORY_CATEGORIZATION_PROMPT
 from dotenv import load_dotenv
 from openai import OpenAI, RateLimitError
 from pydantic import BaseModel
-from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 load_dotenv()
 
@@ -46,7 +45,6 @@ def _categorize_with_model(memory: str, model: str) -> List[str]:
     return [cat.strip().lower() for cat in parsed.categories]
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15), retry=retry_if_not_exception_type(RateLimitError))
 def get_categories_for_memory(memory: str) -> List[str]:
     try:
         return _categorize_with_model(memory, PRIMARY_MODEL)
