@@ -1,5 +1,7 @@
+import asyncio
 import logging
 from datetime import UTC, datetime
+from functools import partial
 from typing import List, Optional, Set
 from uuid import UUID
 
@@ -15,6 +17,7 @@ from app.models import (
     User,
 )
 from app.schemas import MemoryResponse
+from app.utils import MEMORY_ADD_TIMEOUT
 from app.utils.memory import add_memory_with_fallback, get_memory_client
 from app.utils.permissions import check_memory_access_permissions
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -256,15 +259,23 @@ async def create_memory(
 
     # Try to save to Qdrant via memory_client
     try:
-        qdrant_response = add_memory_with_fallback(
-            memory_client,
-            request.text,
-            user_id=request.user_id,  # Use string user_id to match search
-            metadata={
-                "source_app": "openmemory",
-                "mcp_client": request.app,
-            },
-            infer=request.infer
+        loop = asyncio.get_running_loop()
+        qdrant_response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                partial(
+                    add_memory_with_fallback,
+                    memory_client,
+                    request.text,
+                    user_id=request.user_id,
+                    metadata={
+                        "source_app": "openmemory",
+                        "mcp_client": request.app,
+                    },
+                    infer=request.infer,
+                ),
+            ),
+            timeout=MEMORY_ADD_TIMEOUT,
         )
         
         # Log the response for debugging
@@ -319,6 +330,11 @@ async def create_memory(
                 # Return the first memory (for API compatibility)
                 # but all memories are now saved to the database
                 return created_memories[0]
+    except asyncio.TimeoutError:
+        logging.error(f"Memory creation timed out after {MEMORY_ADD_TIMEOUT}s (likely LLM rate limiting)")
+        return {
+            "error": f"Memory creation timed out after {MEMORY_ADD_TIMEOUT:.0f}s. LLM provider may be rate-limited."
+        }
     except Exception as qdrant_error:
         logging.warning(f"Qdrant operation failed: {qdrant_error}.")
         # Return a json response with the error
