@@ -93,6 +93,7 @@ async def add_memories(text: str) -> str:
                         memory_client.add,
                         text,
                         user_id=uid,
+                        infer=False,
                         metadata={
                             "source_app": "openmemory",
                             "mcp_client": client_name,
