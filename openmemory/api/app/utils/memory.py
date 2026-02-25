@@ -244,7 +244,7 @@ def get_default_memory_config():
         "llm": {
             "provider": "openai",
             "config": {
-                "model": "llama-3.1-8b-instant",
+                "model": "llama-3.3-70b-versatile",
                 "temperature": 0.1,
                 "max_tokens": 2000,
                 "api_key": "env:GROQ_API_KEY",
@@ -259,7 +259,22 @@ def get_default_memory_config():
                 "ollama_base_url": "http://localhost:11434"
             }
         },
-        "version": "v1.1"
+        "version": "v1.1",
+        "custom_fact_extraction_prompt": (
+            "Extract facts about the user from their messages only. Ignore assistant/system messages.\n"
+            "Return JSON: {\"facts\": []} — empty list if nothing relevant.\n"
+            "Rules:\n"
+            "- Combine related info into ONE fact. Never split a topic across multiple facts.\n"
+            "- Each fact must be self-contained with full context.\n"
+            "- Skip greetings, filler, and generic statements.\n"
+            "- Detect input language and record facts in that language.\n\n"
+            "Examples:\n"
+            "Input: Hi, how are you?\nOutput: {\"facts\": []}\n\n"
+            "Input: My name is John. I work as a software engineer at Google for 5 years.\n"
+            "Output: {\"facts\": [\"Name is John, software engineer at Google for 5 years\"]}\n\n"
+            "Input: Had a meeting with John at 3pm. We discussed the new project timeline and budget.\n"
+            "Output: {\"facts\": [\"Had a meeting with John at 3pm to discuss project timeline and budget\"]}\n"
+        ),
     }
 
 

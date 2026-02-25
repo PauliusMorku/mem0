@@ -35,7 +35,7 @@ def get_categories_for_memory(memory: str) -> List[str]:
         ]
 
         response = _groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="llama-3.3-70b-versatile",
             messages=messages,
             temperature=0,
             response_format={"type": "json_object"},
