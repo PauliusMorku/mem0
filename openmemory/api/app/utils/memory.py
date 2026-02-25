@@ -270,15 +270,16 @@ def get_default_memory_config(model=None):
         "custom_fact_extraction_prompt": (
             "Extract facts from user messages only. Return JSON: {\"facts\": []} — empty if nothing relevant.\n"
             "Rules:\n"
-            "- One project/system = one fact. Combine ALL details about the same subject. Aim for 0-2 facts.\n"
-            "- Every fact must be useful IN ISOLATION — always include project/system/context.\n"
-            "  BAD: \"Needs 30 days testing\" GOOD: \"Acorn v1.0 requires 30 days paper trading before v2\"\n"
+            "- Extract facts FAITHFULLY — do not rephrase or compress. Preserve the user's wording.\n"
+            "- Every fact MUST include full context (which project, system, person) so it is useful on its own.\n"
+            "  BAD: \"Has 8GB RAM\" GOOD: \"Raspberry Pi at parents' place has 8GB RAM\"\n"
+            "- Splitting into multiple facts is fine — but EVERY fact must carry the full context.\n"
             "- Skip greetings, filler, generic statements. Detect and use input language.\n\n"
             "Examples:\n"
-            "Input: My name is John. I work as a software engineer at Google for 5 years.\n"
-            "Output: {\"facts\": [\"Name is John, software engineer at Google for 5 years\"]}\n\n"
-            "Input: We finished the SiteSeeker migration to PostgreSQL. Had enum type issues but resolved them. Switched to PgBouncer. Next step is read replicas.\n"
-            "Output: {\"facts\": [\"SiteSeeker: migrated to PostgreSQL with PgBouncer (enum issues resolved). Next: read replicas.\"]}\n"
+            "Input: The staging server on AWS eu-west-1 runs PostgreSQL 16 and uses Redis 7 for caching.\n"
+            "Output: {\"facts\": [\"Staging server (AWS eu-west-1) runs PostgreSQL 16\", \"Staging server (AWS eu-west-1) uses Redis 7 for caching\"]}\n\n"
+            "Input: SiteSeeker was migrated from SQLite to PostgreSQL with PgBouncer. Had enum issues but resolved them.\n"
+            "Output: {\"facts\": [\"SiteSeeker: migrated from SQLite to PostgreSQL with PgBouncer (enum issues resolved)\"]}\n"
         ),
     }
 
