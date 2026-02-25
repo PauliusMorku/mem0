@@ -1,43 +1,49 @@
+import json
 import logging
+import os
 from typing import List
 
+from app.utils import PRIMARY_MODEL
 from app.utils.prompts import MEMORY_CATEGORIZATION_PROMPT
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 load_dotenv()
-openai_client = OpenAI()
+
+_groq_api_key = os.environ.get("GROQ_API_KEY")
+if not _groq_api_key:
+    raise RuntimeError("GROQ_API_KEY environment variable is required but not set")
+
+_groq_client = OpenAI(
+    api_key=_groq_api_key,
+    base_url="https://api.groq.com/openai/v1",
+    max_retries=0,
+)
 
 
 class MemoryCategories(BaseModel):
     categories: List[str]
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
 def get_categories_for_memory(memory: str) -> List[str]:
     try:
         messages = [
             {"role": "system", "content": MEMORY_CATEGORIZATION_PROMPT},
-            {"role": "user", "content": memory}
+            {"role": "user", "content": f"{memory}\n\nRespond with JSON only: {{\"categories\": [...]}}"},
         ]
 
-        # Let OpenAI handle the pydantic parsing directly
-        completion = openai_client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
+        response = _groq_client.chat.completions.create(
+            model=PRIMARY_MODEL,
             messages=messages,
-            response_format=MemoryCategories,
-            temperature=0
+            temperature=0,
+            response_format={"type": "json_object"},
         )
 
-        parsed: MemoryCategories = completion.choices[0].message.parsed
+        result = json.loads(response.choices[0].message.content)
+        parsed = MemoryCategories(**result)
         return [cat.strip().lower() for cat in parsed.categories]
 
     except Exception as e:
         logging.error(f"[ERROR] Failed to get categories: {e}")
-        try:
-            logging.debug(f"[DEBUG] Raw response: {completion.choices[0].message.content}")
-        except Exception as debug_e:
-            logging.debug(f"[DEBUG] Could not extract raw response: {debug_e}")
         raise
