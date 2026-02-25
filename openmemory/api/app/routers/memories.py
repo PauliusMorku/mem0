@@ -15,7 +15,7 @@ from app.models import (
     User,
 )
 from app.schemas import MemoryResponse
-from app.utils.memory import get_memory_client
+from app.utils.memory import add_memory_with_fallback, get_memory_client
 from app.utils.permissions import check_memory_access_permissions
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_pagination import Page, Params
@@ -256,7 +256,8 @@ async def create_memory(
 
     # Try to save to Qdrant via memory_client
     try:
-        qdrant_response = memory_client.add(
+        qdrant_response = add_memory_with_fallback(
+            memory_client,
             request.text,
             user_id=request.user_id,  # Use string user_id to match search
             metadata={

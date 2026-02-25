@@ -7,7 +7,7 @@ Branch: `pi5/groq-ollama-setup`
 
 ## Architecture
 
-- **LLM:** `llama-3.3-70b-versatile` via Groq API (OpenAI-compatible)
+- **LLM:** `llama-3.3-70b-versatile` via Groq API (primary), `openai/gpt-oss-120b` (fallback on rate limit)
 - **Embeddings:** `nomic-embed-text` via local Ollama (port 11434)
 - **Vector store:** Qdrant (Docker container `mem0_store`, port 6333)
 - **API:** OpenMemory MCP server (Docker container, port 8765)
@@ -18,8 +18,10 @@ Branch: `pi5/groq-ollama-setup`
 |---|---|
 | `openmemory/api/config.json` | Groq LLM + Ollama embedder + Qdrant config |
 | `openmemory/api/default_config.json` | Same as config.json (fallback defaults) |
-| `openmemory/api/app/utils/memory.py` | Default config uses Groq, custom extraction prompt |
-| `openmemory/api/app/utils/categorization.py` | Uses Groq client directly for categorization |
+| `openmemory/api/app/utils/memory.py` | Default config uses Groq, custom extraction prompt, 70B->gpt-oss fallback |
+| `openmemory/api/app/utils/categorization.py` | Uses Groq client directly for categorization, 70B->gpt-oss fallback |
+| `openmemory/api/app/mcp_server.py` | Uses `add_memory_with_fallback()` wrapper for add_memories |
+| `openmemory/api/app/routers/memories.py` | Uses `add_memory_with_fallback()` wrapper for create_memory |
 | `openmemory/docker-compose.yml` | Removed API_KEY env, bind-mount Qdrant data |
 | `.gitignore` | Added `openmemory/qdrant-data/` |
 
@@ -52,9 +54,22 @@ fragments without it.
 - Production-tier status on Groq (no deprecation risk)
 - 100K TPD / 1K RPD free tier — sufficient for personal use
 
-Models tested and rejected:
+Models tested and rejected as primary:
 - `llama-3.1-8b-instant`: Severe fragmentation, poor instruction following
 - `meta-llama/llama-4-scout-17b-16e-instruct`: Broken tool calling on Groq, preview-only status
+
+## Rate Limit Fallback (70B -> gpt-oss-120b)
+
+When `llama-3.3-70b-versatile` hits Groq rate limits (100K TPD / 1K RPD), all
+`memory_client.add()` calls and categorization automatically fall back to
+`openai/gpt-oss-120b` (separate rate limit, 200K TPD / 1K RPD). This prevents
+silent memory loss.
+
+- **Scope:** Only `add()` operations need fallback (search/delete/get_all are vector store ops)
+- **Lazy init:** Fallback client only created on first rate limit hit (~50MB RAM saved normally)
+- **Same config:** Both models share Qdrant, Ollama, and custom extraction prompt
+- **gpt-oss-120b:** 90% MMLU, supports JSON mode + JSON schema, production status on Groq
+- **If both rate-limited:** Error propagates to existing exception handlers
 
 ## Environment
 
