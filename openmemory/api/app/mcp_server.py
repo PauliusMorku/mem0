@@ -24,7 +24,7 @@ import uuid
 from app.database import SessionLocal
 from app.models import Memory, MemoryAccessLog, MemoryState, MemoryStatusHistory
 from app.utils.db import get_user_and_app
-from app.utils.memory import add_memory_with_fallback, get_memory_client
+from app.utils.memory import _RateLimitEscape, add_memory_with_fallback, get_memory_client
 from app.utils.permissions import check_memory_access_permissions
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -136,6 +136,9 @@ async def add_memories(text: str) -> str:
             return json.dumps(response)
         finally:
             db.close()
+    except _RateLimitEscape as e:
+        logging.error(f"Rate limited adding to memory: {e.original}")
+        return f"Error adding to memory: rate limited on all models"
     except Exception as e:
         logging.exception(f"Error adding to memory: {e}")
         return f"Error adding to memory: {e}"

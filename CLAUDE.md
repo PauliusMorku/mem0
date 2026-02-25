@@ -69,13 +69,34 @@ silent memory loss.
 - **Lazy init:** Fallback client only created on first rate limit hit (~50MB RAM saved normally)
 - **Same config:** Both models share Qdrant, Ollama, and custom extraction prompt
 - **gpt-oss-120b:** 90% MMLU, supports JSON mode + JSON schema, production status on Groq
-- **If both rate-limited:** Error propagates to existing exception handlers
+- **SDK retries disabled:** mem0's internal OpenAI client and the categorization client both use `max_retries=0`. Without this, the SDK silently retries 429s for ~34s before mem0 swallows the error — the memory is lost either way. With `max_retries=0`, `RateLimitError` propagates immediately to our fallback wrappers.
+- **If both rate-limited:** Logged distinctly ("Both models rate limited"), then error propagates to existing exception handlers
 
 ## Environment
 
 - API key: `GROQ_API_KEY` env var (loaded from `openmemory/api/.env`)
 - Ollama must be running on the host (accessible from Docker as `host.docker.internal:11434` or `localhost:11434`)
 - Qdrant data persisted to `openmemory/qdrant-data/` (bind mount, gitignored)
+
+## Testing Fallback
+
+When testing rate limit fallback by pushing burn memories, **always use
+`user_id=test`** (not `pm`) to avoid contaminating real memories. The MCP
+`add_memories` tool uses the session's user_id from the URL path, so for
+burn tests use the REST API directly:
+
+```bash
+curl -s http://localhost:8765/api/v1/memories/ \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id": "test", "text": "BURN_TEST: ...", "app": "test"}'
+```
+
+After testing, clean up with:
+```bash
+curl -s -X DELETE http://localhost:8765/api/v1/memories/ \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id": "test", "memory_ids": [...]}'
+```
 
 ## Running
 

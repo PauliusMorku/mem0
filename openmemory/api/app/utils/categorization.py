@@ -19,6 +19,7 @@ if not _groq_api_key:
 _groq_client = OpenAI(
     api_key=_groq_api_key,
     base_url="https://api.groq.com/openai/v1",
+    max_retries=0,
 )
 
 
@@ -54,7 +55,14 @@ def get_categories_for_memory(memory: str) -> List[str]:
             f"Primary model ({PRIMARY_MODEL}) rate limited for categorization. "
             f"Falling back to {FALLBACK_MODEL}..."
         )
-        return _categorize_with_model(memory, FALLBACK_MODEL)
+        try:
+            return _categorize_with_model(memory, FALLBACK_MODEL)
+        except RateLimitError:
+            logging.error(
+                f"Both models rate limited for categorization "
+                f"({PRIMARY_MODEL} and {FALLBACK_MODEL}). Skipping categories."
+            )
+            raise
     except Exception as e:
         logging.error(f"[ERROR] Failed to get categories: {e}")
         raise

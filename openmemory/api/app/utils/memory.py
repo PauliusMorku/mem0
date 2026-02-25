@@ -375,6 +375,48 @@ def _build_resolved_config(model=None, custom_instructions=None):
     return config
 
 
+class _RateLimitEscape(BaseException):
+    """
+    Wraps RateLimitError to escape mem0's `except Exception` blocks.
+
+    mem0's _add_to_vector_store() catches Exception at multiple points,
+    silently swallowing RateLimitError and returning empty results. Since
+    BaseException is not caught by `except Exception`, wrapping the error
+    lets it propagate out to our add_memory_with_fallback() wrapper.
+    """
+    def __init__(self, original):
+        self.original = original
+        super().__init__(str(original))
+
+
+def _disable_sdk_retries(client):
+    """
+    Patch a Memory client's LLM to bypass both SDK retries and mem0's
+    `except Exception` swallowing of RateLimitError.
+
+    Two patches applied:
+    1. max_retries=0 on the OpenAI client — prevents SDK from silently
+       retrying 429s for ~34s
+    2. Wrap generate_response() — converts RateLimitError into a
+       BaseException subclass (_RateLimitEscape) so it escapes mem0's
+       `except Exception` blocks
+    """
+    try:
+        client.llm.client = client.llm.client.with_options(max_retries=0)
+    except AttributeError:
+        logging.warning("Could not patch mem0 LLM client max_retries — attribute path changed")
+
+    original_generate = client.llm.generate_response
+
+    def _generate_with_escape(*args, **kwargs):
+        try:
+            return original_generate(*args, **kwargs)
+        except RateLimitError as e:
+            raise _RateLimitEscape(e) from e
+
+    client.llm.generate_response = _generate_with_escape
+
+
 def get_memory_client(custom_instructions: str = None):
     """
     Get or initialize the Mem0 client.
@@ -401,6 +443,7 @@ def get_memory_client(custom_instructions: str = None):
             print(f"Initializing memory client with config hash: {current_config_hash}")
             try:
                 _memory_client = Memory.from_config(config_dict=config)
+                _disable_sdk_retries(_memory_client)
                 _config_hash = current_config_hash
                 print("Memory client initialized successfully")
             except Exception as init_error:
@@ -433,6 +476,7 @@ def get_fallback_client():
         if _fallback_client is None or _fallback_config_hash != current_hash:
             logging.info(f"Initializing fallback memory client with model: {FALLBACK_MODEL}")
             _fallback_client = Memory.from_config(config_dict=config)
+            _disable_sdk_retries(_fallback_client)
             _fallback_config_hash = current_hash
             logging.info("Fallback memory client initialized successfully")
 
@@ -450,7 +494,7 @@ def add_memory_with_fallback(memory_client, text, **kwargs):
     """
     try:
         return memory_client.add(text, **kwargs)
-    except RateLimitError:
+    except (RateLimitError, _RateLimitEscape):
         logging.warning(
             f"Primary model ({PRIMARY_MODEL}) rate limited. "
             f"Falling back to {FALLBACK_MODEL}..."
@@ -458,7 +502,14 @@ def add_memory_with_fallback(memory_client, text, **kwargs):
         fallback = get_fallback_client()
         if fallback is None:
             raise
-        return fallback.add(text, **kwargs)
+        try:
+            return fallback.add(text, **kwargs)
+        except (RateLimitError, _RateLimitEscape):
+            logging.error(
+                f"Both models rate limited for memory add "
+                f"({PRIMARY_MODEL} and {FALLBACK_MODEL}). Memory not saved."
+            )
+            raise
 
 
 def get_default_user_id():
