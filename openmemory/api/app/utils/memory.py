@@ -262,18 +262,15 @@ def get_default_memory_config():
         },
         "version": "v1.1",
         "custom_fact_extraction_prompt": (
-            "Extract facts from user messages only. Return JSON: {\"facts\": []} — empty if nothing relevant.\n"
-            "Rules:\n"
-            "- Extract facts FAITHFULLY — do not rephrase or compress. Preserve the user's wording.\n"
-            "- Every fact MUST include full context (which project, system, person) so it is useful on its own.\n"
-            "  BAD: \"Has 8GB RAM\" GOOD: \"Raspberry Pi at parents' place has 8GB RAM\"\n"
-            "- Splitting into multiple facts is fine — but EVERY fact must carry the full context.\n"
-            "- Skip greetings, filler, generic statements.\n\n"
-            "Examples:\n"
-            "Input: The staging server on AWS eu-west-1 runs PostgreSQL 16 and uses Redis 7 for caching.\n"
-            "Output: {\"facts\": [\"Staging server (AWS eu-west-1) runs PostgreSQL 16\", \"Staging server (AWS eu-west-1) uses Redis 7 for caching\"]}\n\n"
-            "Input: SiteSeeker was migrated from SQLite to PostgreSQL with PgBouncer. Had enum issues but resolved them.\n"
-            "Output: {\"facts\": [\"SiteSeeker: migrated from SQLite to PostgreSQL with PgBouncer (enum issues resolved)\"]}\n"
+            "Extract facts from user messages. Return JSON: {\"facts\": []} — empty if nothing worth remembering.\n"
+            "Skip greetings, filler, and generic statements.\n\n"
+            "Each fact must be self-contained — include enough context (system, project, person) that the fact is useful in complete isolation, months later, with no surrounding conversation.\n"
+            "Preserve the user's original wording. Do not rephrase, summarize, or editorialize.\n"
+            "Default to keeping related information as a single fact. Only split into separate facts when the topics are unrelated.\n\n"
+            "Input: The Pi 5 runs Debian Trixie on aarch64 with 8GB RAM and a 1.8TB NVMe SSD.\n"
+            "Output: {\"facts\": [\"Pi 5 runs Debian Trixie (aarch64), 8GB RAM, 1.8TB NVMe SSD\"]}\n\n"
+            "Input: Uses ZeroTier for networking. The Pi workspace is at /mnt/data/workspace.\n"
+            "Output: {\"facts\": [\"Uses ZeroTier for networking\", \"Pi workspace is at /mnt/data/workspace\"]}\n"
         ),
     }
 
