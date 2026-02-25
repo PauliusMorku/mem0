@@ -15,15 +15,18 @@ Key features:
 - Environment variable parsing for API keys
 """
 
+import asyncio
 import contextvars
 import datetime
 import json
 import logging
 import uuid
+from functools import partial
 
 from app.database import SessionLocal
 from app.models import Memory, MemoryAccessLog, MemoryState, MemoryStatusHistory
 from app.utils.db import get_user_and_app
+from app.utils import MEMORY_ADD_TIMEOUT
 from app.utils.memory import get_memory_client
 from app.utils.permissions import check_memory_access_permissions
 from dotenv import load_dotenv
@@ -82,12 +85,22 @@ async def add_memories(text: str) -> str:
             if not app.is_active:
                 return f"Error: App {app.name} is currently paused on OpenMemory. Cannot create new memories."
 
-            response = memory_client.add(text,
-                                         user_id=uid,
-                                         metadata={
-                                            "source_app": "openmemory",
-                                            "mcp_client": client_name,
-                                        })
+            loop = asyncio.get_running_loop()
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    partial(
+                        memory_client.add,
+                        text,
+                        user_id=uid,
+                        metadata={
+                            "source_app": "openmemory",
+                            "mcp_client": client_name,
+                        },
+                    ),
+                ),
+                timeout=MEMORY_ADD_TIMEOUT,
+            )
 
             # Process the response and update database
             if isinstance(response, dict) and 'results' in response:
@@ -136,6 +149,9 @@ async def add_memories(text: str) -> str:
             return json.dumps(response)
         finally:
             db.close()
+    except asyncio.TimeoutError:
+        logging.error(f"Memory add timed out after {MEMORY_ADD_TIMEOUT}s (likely LLM rate limiting)")
+        return f"Error adding to memory: timed out after {MEMORY_ADD_TIMEOUT:.0f}s. LLM provider may be rate-limited."
     except Exception as e:
         logging.exception(f"Error adding to memory: {e}")
         return f"Error adding to memory: {e}"
