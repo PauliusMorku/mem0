@@ -184,5 +184,6 @@ notebooks/*.yaml
 # local directories for testing
 eval/
 qdrant_storage/
+openmemory/qdrant-data/
 .crossnote
 testing.ipynb
