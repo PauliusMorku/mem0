@@ -233,6 +233,7 @@ def get_default_memory_config():
         vector_store_provider = "qdrant"
         vector_store_config.update({
             "port": 6333,
+            "embedding_model_dims": 768,
         })
     
     print(f"Auto-detected vector store: {vector_store_provider} with config: {vector_store_config}")
@@ -356,6 +357,12 @@ def _build_resolved_config(custom_instructions=None):
     instructions_to_use = custom_instructions or db_custom_instructions
     if instructions_to_use:
         config["custom_fact_extraction_prompt"] = instructions_to_use
+
+    # Fix Ollama URLs for Docker regardless of config source
+    if config.get("llm", {}).get("provider") == "ollama":
+        config["llm"] = _fix_ollama_urls(config["llm"])
+    if config.get("embedder", {}).get("provider") == "ollama":
+        config["embedder"] = _fix_ollama_urls(config["embedder"])
 
     # Parse environment variables (e.g. "env:GROQ_API_KEY" -> actual value)
     config = _parse_environment_variables(config)
