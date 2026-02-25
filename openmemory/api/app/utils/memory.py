@@ -274,7 +274,7 @@ def get_default_memory_config(model=None):
             "- Every fact MUST include full context (which project, system, person) so it is useful on its own.\n"
             "  BAD: \"Has 8GB RAM\" GOOD: \"Raspberry Pi at parents' place has 8GB RAM\"\n"
             "- Splitting into multiple facts is fine — but EVERY fact must carry the full context.\n"
-            "- Skip greetings, filler, generic statements. Detect and use input language.\n\n"
+            "- Skip greetings, filler, generic statements.\n\n"
             "Examples:\n"
             "Input: The staging server on AWS eu-west-1 runs PostgreSQL 16 and uses Redis 7 for caching.\n"
             "Output: {\"facts\": [\"Staging server (AWS eu-west-1) runs PostgreSQL 16\", \"Staging server (AWS eu-west-1) uses Redis 7 for caching\"]}\n\n"
