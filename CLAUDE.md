@@ -11,6 +11,7 @@ Branch: `pi5/groq-ollama-setup`
 - **Embeddings:** `nomic-embed-text` via local Ollama (port 11434)
 - **Vector store:** Qdrant (Docker container `mem0_store`, port 6333)
 - **API:** OpenMemory MCP server (Docker container, port 8765)
+- **Groq free tier limits:** 30 RPM / 12K TPM / 100K TPD per model
 
 ## Key Files Modified (from upstream)
 
@@ -18,7 +19,8 @@ Branch: `pi5/groq-ollama-setup`
 |---|---|
 | `openmemory/api/config.json` | Groq LLM + Ollama embedder + Qdrant config |
 | `openmemory/api/default_config.json` | Same as config.json (fallback defaults) |
-| `openmemory/api/app/utils/memory.py` | Default config uses Groq, custom extraction prompt, 70B->gpt-oss fallback |
+| `openmemory/api/app/utils/__init__.py` | PRIMARY_MODEL / FALLBACK_MODEL constants |
+| `openmemory/api/app/utils/memory.py` | Default config uses Groq, custom extraction prompt, fallback logic, `_RateLimitEscape` mechanism |
 | `openmemory/api/app/utils/categorization.py` | Uses Groq client directly for categorization, 70B->gpt-oss fallback |
 | `openmemory/api/app/mcp_server.py` | Uses `add_memory_with_fallback()` wrapper for add_memories |
 | `openmemory/api/app/routers/memories.py` | Uses `add_memory_with_fallback()` wrapper for create_memory |
@@ -52,7 +54,7 @@ fragments without it.
 - Highest IFEval score (92.1%) — critical for structured JSON extraction
 - Only model with proven reliable JSON + tool calling on Groq
 - Production-tier status on Groq (no deprecation risk)
-- 100K TPD / 1K RPD free tier — sufficient for personal use
+- 30 RPM / 12K TPM / 100K TPD free tier — sufficient for personal use
 
 Models tested and rejected as primary:
 - `llama-3.1-8b-instant`: Severe fragmentation, poor instruction following
@@ -60,17 +62,38 @@ Models tested and rejected as primary:
 
 ## Rate Limit Fallback (70B -> gpt-oss-120b)
 
-When `llama-3.3-70b-versatile` hits Groq rate limits (100K TPD / 1K RPD), all
-`memory_client.add()` calls and categorization automatically fall back to
-`openai/gpt-oss-120b` (separate rate limit, 200K TPD / 1K RPD). This prevents
-silent memory loss.
+When `llama-3.3-70b-versatile` hits Groq rate limits, all `memory_client.add()`
+calls and categorization automatically fall back to `openai/gpt-oss-120b`. This
+prevents silent memory loss.
 
 - **Scope:** Only `add()` operations need fallback (search/delete/get_all are vector store ops)
 - **Lazy init:** Fallback client only created on first rate limit hit (~50MB RAM saved normally)
 - **Same config:** Both models share Qdrant, Ollama, and custom extraction prompt
-- **gpt-oss-120b:** 90% MMLU, supports JSON mode + JSON schema, production status on Groq
-- **SDK retries disabled:** mem0's internal OpenAI client and the categorization client both use `max_retries=0`. Without this, the SDK silently retries 429s for ~34s before mem0 swallows the error — the memory is lost either way. With `max_retries=0`, `RateLimitError` propagates immediately to our fallback wrappers.
-- **If both rate-limited:** Logged distinctly ("Both models rate limited"), then error propagates to existing exception handlers
+- **gpt-oss-120b quality:** 90% MMLU, good extraction (no fragmentation), but weaker
+  deduplication than 70B (may ADD where 70B would UPDATE). Good enough as fallback.
+- **Shared RPM:** gpt-oss-120b shares RPM quota with llama-3.1-8b-instant on Groq.
+  Fallback helps when daily quota (TPD) is the bottleneck, not burst traffic (RPM/TPM).
+- **TPM is the real bottleneck:** Each `add()` makes 2 LLM calls (~2-3K tokens),
+  plus 1 categorization call. With 12K TPM limit, 3+ concurrent adds can exhaust it.
+  **Never call add_memories in parallel** — always sequential.
+
+### How RateLimitError propagates
+
+mem0's `_add_to_vector_store()` has `except Exception` blocks that silently
+swallow `RateLimitError`, returning empty results. Two patches in
+`_patch_rate_limit_handling()` make fallback work:
+
+1. `max_retries=0` on the OpenAI SDK client — prevents ~34s of silent retries
+2. `_RateLimitEscape(BaseException)` wrapper on `generate_response()` — since
+   `except Exception` does not catch `BaseException` subclasses, the error
+   escapes mem0's internals and reaches `add_memory_with_fallback()`
+
+`_RateLimitEscape` is contained within `memory.py` — it is converted to
+`RuntimeError` at the `add_memory_with_fallback()` boundary, so callers
+only need their normal `except Exception` handlers.
+
+The categorization client uses `max_retries=0` directly (no monkey-patch
+needed since we control that code).
 
 ## Environment
 
@@ -109,3 +132,6 @@ Rebuild after code changes:
 ```bash
 docker compose up -d --build openmemory-mcp
 ```
+
+**After rebuilding**, restart any Claude Code sessions connected via MCP —
+the SSE connection goes stale and produces `MCP error -32602` until reconnected.
