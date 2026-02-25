@@ -17,8 +17,6 @@ Branch: `rpi5-ollama`
 
 | File | What changed |
 |---|---|
-| `openmemory/api/config.json` | Groq LLM + Ollama embedder + Qdrant config |
-| `openmemory/api/default_config.json` | Same as config.json (fallback defaults) |
 | `openmemory/api/app/utils/__init__.py` | PRIMARY_MODEL constant, MEMORY_ADD_TIMEOUT |
 | `openmemory/api/app/utils/memory.py` | Default config uses Groq, custom extraction prompt |
 | `openmemory/api/app/utils/categorization.py` | Uses Groq client directly for categorization |
