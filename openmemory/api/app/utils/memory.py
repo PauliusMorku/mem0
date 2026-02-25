@@ -34,6 +34,7 @@ import socket
 
 from app.database import SessionLocal
 from app.models import Config as ConfigModel
+from app.utils import PRIMARY_MODEL
 
 from mem0 import Memory
 
@@ -244,17 +245,19 @@ def get_default_memory_config():
         "llm": {
             "provider": "openai",
             "config": {
-                "model": "gpt-4o-mini",
+                "model": PRIMARY_MODEL,
                 "temperature": 0.1,
                 "max_tokens": 2000,
-                "api_key": "env:OPENAI_API_KEY"
+                "api_key": "env:GROQ_API_KEY",
+                "openai_base_url": "https://api.groq.com/openai/v1"
             }
         },
         "embedder": {
-            "provider": "openai",
+            "provider": "ollama",
             "config": {
-                "model": "text-embedding-3-small",
-                "api_key": "env:OPENAI_API_KEY"
+                "model": "nomic-embed-text",
+                "embedding_dims": 768,
+                "ollama_base_url": "http://localhost:11434"
             }
         },
         "version": "v1.1"
@@ -286,6 +289,68 @@ def _parse_environment_variables(config_dict):
     return config_dict
 
 
+def _build_resolved_config(custom_instructions=None):
+    """
+    Build a fully resolved memory config: defaults + DB overrides + env var parsing.
+    """
+    config = get_default_memory_config()
+
+    db_custom_instructions = None
+
+    # Load configuration overrides from database
+    try:
+        db = SessionLocal()
+        db_config = db.query(ConfigModel).filter(ConfigModel.key == "main").first()
+
+        if db_config:
+            json_config = db_config.value
+
+            # Extract custom instructions from openmemory settings
+            if "openmemory" in json_config and "custom_instructions" in json_config["openmemory"]:
+                db_custom_instructions = json_config["openmemory"]["custom_instructions"]
+
+            # Override defaults with configurations from the database
+            if "mem0" in json_config:
+                mem0_config = json_config["mem0"]
+
+                # Update LLM configuration if available
+                if "llm" in mem0_config and mem0_config["llm"] is not None:
+                    config["llm"] = mem0_config["llm"]
+
+                    # Fix Ollama URLs for Docker if needed
+                    if config["llm"].get("provider") == "ollama":
+                        config["llm"] = _fix_ollama_urls(config["llm"])
+
+                # Update Embedder configuration if available
+                if "embedder" in mem0_config and mem0_config["embedder"] is not None:
+                    config["embedder"] = mem0_config["embedder"]
+
+                    # Fix Ollama URLs for Docker if needed
+                    if config["embedder"].get("provider") == "ollama":
+                        config["embedder"] = _fix_ollama_urls(config["embedder"])
+
+                if "vector_store" in mem0_config and mem0_config["vector_store"] is not None:
+                    config["vector_store"] = mem0_config["vector_store"]
+        else:
+            print("No configuration found in database, using defaults")
+
+        db.close()
+
+    except Exception as e:
+        print(f"Warning: Error loading configuration from database: {e}")
+        print("Using default configuration")
+
+    # Use caller-provided custom_instructions first, then DB value
+    instructions_to_use = custom_instructions or db_custom_instructions
+    if instructions_to_use:
+        config["custom_fact_extraction_prompt"] = instructions_to_use
+
+    # Parse environment variables (e.g. "env:GROQ_API_KEY" -> actual value)
+    config = _parse_environment_variables(config)
+
+    return config
+
+
 def get_memory_client(custom_instructions: str = None):
     """
     Get or initialize the Mem0 client.
@@ -302,69 +367,11 @@ def get_memory_client(custom_instructions: str = None):
     global _memory_client, _config_hash
 
     try:
-        # Start with default configuration
-        config = get_default_memory_config()
-        
-        # Variable to track custom instructions
-        db_custom_instructions = None
-        
-        # Load configuration from database
-        try:
-            db = SessionLocal()
-            db_config = db.query(ConfigModel).filter(ConfigModel.key == "main").first()
-            
-            if db_config:
-                json_config = db_config.value
-                
-                # Extract custom instructions from openmemory settings
-                if "openmemory" in json_config and "custom_instructions" in json_config["openmemory"]:
-                    db_custom_instructions = json_config["openmemory"]["custom_instructions"]
-                
-                # Override defaults with configurations from the database
-                if "mem0" in json_config:
-                    mem0_config = json_config["mem0"]
-                    
-                    # Update LLM configuration if available
-                    if "llm" in mem0_config and mem0_config["llm"] is not None:
-                        config["llm"] = mem0_config["llm"]
-                        
-                        # Fix Ollama URLs for Docker if needed
-                        if config["llm"].get("provider") == "ollama":
-                            config["llm"] = _fix_ollama_urls(config["llm"])
-                    
-                    # Update Embedder configuration if available
-                    if "embedder" in mem0_config and mem0_config["embedder"] is not None:
-                        config["embedder"] = mem0_config["embedder"]
-                        
-                        # Fix Ollama URLs for Docker if needed
-                        if config["embedder"].get("provider") == "ollama":
-                            config["embedder"] = _fix_ollama_urls(config["embedder"])
-
-                    if "vector_store" in mem0_config and mem0_config["vector_store"] is not None:
-                        config["vector_store"] = mem0_config["vector_store"]
-            else:
-                print("No configuration found in database, using defaults")
-                    
-            db.close()
-                            
-        except Exception as e:
-            print(f"Warning: Error loading configuration from database: {e}")
-            print("Using default configuration")
-            # Continue with default configuration if database config can't be loaded
-
-        # Use custom_instructions parameter first, then fall back to database value
-        instructions_to_use = custom_instructions or db_custom_instructions
-        if instructions_to_use:
-            config["custom_fact_extraction_prompt"] = instructions_to_use
-
-        # ALWAYS parse environment variables in the final config
-        # This ensures that even default config values like "env:OPENAI_API_KEY" get parsed
-        print("Parsing environment variables in final config...")
-        config = _parse_environment_variables(config)
+        config = _build_resolved_config(custom_instructions=custom_instructions)
 
         # Check if config has changed by comparing hashes
         current_config_hash = _get_config_hash(config)
-        
+
         # Only reinitialize if config changed or client doesn't exist
         if _memory_client is None or _config_hash != current_config_hash:
             print(f"Initializing memory client with config hash: {current_config_hash}")
@@ -378,9 +385,9 @@ def get_memory_client(custom_instructions: str = None):
                 _memory_client = None
                 _config_hash = None
                 return None
-        
+
         return _memory_client
-        
+
     except Exception as e:
         print(f"Warning: Exception occurred while initializing memory client: {e}")
         print("Server will continue running with limited memory functionality")
