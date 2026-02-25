@@ -270,7 +270,7 @@ def get_default_memory_config(model=None):
         "custom_fact_extraction_prompt": (
             "Extract facts from user messages only. Return JSON: {\"facts\": []} — empty if nothing relevant.\n"
             "Rules:\n"
-            "- One topic = one fact. Combine aggressively. Most inputs → 0-2 facts.\n"
+            "- One project/system = one fact. Combine ALL details about the same subject. Aim for 0-2 facts.\n"
             "- Every fact must be useful IN ISOLATION — always include project/system/context.\n"
             "  BAD: \"Needs 30 days testing\" GOOD: \"Acorn v1.0 requires 30 days paper trading before v2\"\n"
             "- Skip greetings, filler, generic statements. Detect and use input language.\n\n"
