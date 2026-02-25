@@ -268,19 +268,17 @@ def get_default_memory_config(model=None):
         },
         "version": "v1.1",
         "custom_fact_extraction_prompt": (
-            "Extract facts about the user from their messages only. Ignore assistant/system messages.\n"
-            "Return JSON: {\"facts\": []} — empty list if nothing relevant.\n"
+            "Extract facts from user messages only. Return JSON: {\"facts\": []} — empty if nothing relevant.\n"
             "Rules:\n"
-            "- Combine related info into ONE fact. Never split a topic across multiple facts.\n"
-            "- Each fact must be self-contained with full context.\n"
-            "- Skip greetings, filler, and generic statements.\n"
-            "- Detect input language and record facts in that language.\n\n"
+            "- One topic = one fact. Combine aggressively. Most inputs → 0-2 facts.\n"
+            "- Every fact must be useful IN ISOLATION — always include project/system/context.\n"
+            "  BAD: \"Needs 30 days testing\" GOOD: \"Acorn v1.0 requires 30 days paper trading before v2\"\n"
+            "- Skip greetings, filler, generic statements. Detect and use input language.\n\n"
             "Examples:\n"
-            "Input: Hi, how are you?\nOutput: {\"facts\": []}\n\n"
             "Input: My name is John. I work as a software engineer at Google for 5 years.\n"
             "Output: {\"facts\": [\"Name is John, software engineer at Google for 5 years\"]}\n\n"
-            "Input: Had a meeting with John at 3pm. We discussed the new project timeline and budget.\n"
-            "Output: {\"facts\": [\"Had a meeting with John at 3pm to discuss project timeline and budget\"]}\n"
+            "Input: We finished the SiteSeeker migration to PostgreSQL. Had enum type issues but resolved them. Switched to PgBouncer. Next step is read replicas.\n"
+            "Output: {\"facts\": [\"SiteSeeker: migrated to PostgreSQL with PgBouncer (enum issues resolved). Next: read replicas.\"]}\n"
         ),
     }
 
