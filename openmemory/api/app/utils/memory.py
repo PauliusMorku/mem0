@@ -244,13 +244,12 @@ def get_default_memory_config():
             "config": vector_store_config
         },
         "llm": {
-            "provider": "openai",
+            "provider": "groq",
             "config": {
                 "model": PRIMARY_MODEL,
                 "temperature": 0.1,
                 "max_tokens": 2000,
                 "api_key": "env:GROQ_API_KEY",
-                "openai_base_url": "https://api.groq.com/openai/v1"
             }
         },
         "embedder": {
