@@ -38,6 +38,11 @@ the default prompt to preserve user wording and require full context in every fa
 - API key: `GROQ_API_KEY` env var (loaded from `openmemory/api/.env`)
 - Ollama must be running on the host (accessible from Docker via gateway)
 - Qdrant data persisted to `openmemory/qdrant-data/` (bind mount, gitignored)
+- Web UI env: `openmemory/.env` (gitignored) must set `USER=pm` and
+  `NEXT_PUBLIC_API_URL=http://172.26.1.1:8765` (ZeroTier IP) so the
+  browser can reach the API when accessing the dashboard remotely.
+  The UI is rebuilt with these values baked in — after changing them,
+  run `docker compose up -d --build openmemory-ui`.
 
 ## Running
 
