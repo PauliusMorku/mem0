@@ -1,6 +1,6 @@
 services:
   mem0_store:
-    image: qdrant/qdrant
+    image: qdrant/qdrant:v1.17.0-16k
     restart: unless-stopped
     ports:
       - "6333:6333"
@@ -33,4 +33,3 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
       - NEXT_PUBLIC_USER_ID=${USER}
-
