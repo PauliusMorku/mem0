@@ -1,9 +1,24 @@
-import { QdrantClient } from "@qdrant/js-client-rest";
+import type { QdrantClient } from "@qdrant/js-client-rest";
 import { VectorStore } from "./base";
 import { SearchFilters, VectorStoreConfig, VectorStoreResult } from "../types";
+import { loadPeer } from "../utils/load_peer";
 import * as fs from "fs";
 
 interface QdrantConfig extends VectorStoreConfig {
+  /**
+   * Pre-configured QdrantClient instance. If using Qdrant Cloud, you must pass
+   * `port` explicitly when constructing the client to avoid "Illegal host" errors
+   * caused by a known upstream bug (qdrant/qdrant-js#59).
+   *
+   * @example
+   * ```typescript
+   * const client = new QdrantClient({
+   *   url: "https://xxx.cloud.qdrant.io:6333",
+   *   port: 6333,
+   *   apiKey: "xxx",
+   * });
+   * ```
+   */
   client?: QdrantClient;
   host?: string;
   port?: number;
@@ -17,86 +32,249 @@ interface QdrantConfig extends VectorStoreConfig {
 }
 
 interface QdrantFilter {
-  must?: QdrantCondition[];
-  must_not?: QdrantCondition[];
-  should?: QdrantCondition[];
+  must?: (QdrantCondition | QdrantFilter)[];
+  must_not?: (QdrantCondition | QdrantFilter)[];
+  should?: (QdrantCondition | QdrantFilter)[];
 }
 
 interface QdrantCondition {
   key: string;
-  match?: { value: any };
-  range?: { gte?: number; gt?: number; lte?: number; lt?: number };
+  match?: { value?: any; any?: any[]; except?: any[]; text?: string };
+  range?: {
+    gte?: number | string;
+    gt?: number | string;
+    lte?: number | string;
+    lt?: number | string;
+  };
 }
 
+// Normalize $and/$or/$not to AND/OR/NOT
+const KEY_MAP: Record<string, string> = {
+  $and: "AND",
+  $or: "OR",
+  $not: "NOT",
+};
+
 export class Qdrant implements VectorStore {
-  private client: QdrantClient;
+  private client!: QdrantClient;
+  private readonly config: QdrantConfig;
   private readonly collectionName: string;
   private dimension: number;
+  private _initPromise?: Promise<void>;
 
   constructor(config: QdrantConfig) {
-    if (config.client) {
-      this.client = config.client;
-    } else {
-      const params: Record<string, any> = {};
-      if (config.apiKey) {
-        params.apiKey = config.apiKey;
-      }
-      if (config.url) {
-        params.url = config.url;
-      }
-      if (config.host && config.port) {
-        params.host = config.host;
-        params.port = config.port;
-      }
-      if (!Object.keys(params).length) {
-        params.path = config.path;
-        if (!config.onDisk && config.path) {
-          if (
-            fs.existsSync(config.path) &&
-            fs.statSync(config.path).isDirectory()
-          ) {
-            fs.rmSync(config.path, { recursive: true });
-          }
-        }
-      }
-
-      this.client = new QdrantClient(params);
-    }
-
+    this.config = config;
     this.collectionName = config.collectionName;
     this.dimension = config.dimension || 1536; // Default OpenAI dimension
     this.initialize().catch(console.error);
   }
 
-  private createFilter(filters?: SearchFilters): QdrantFilter | undefined {
-    if (!filters) return undefined;
-
-    const conditions: QdrantCondition[] = [];
-    for (const [key, value] of Object.entries(filters)) {
-      if (
-        typeof value === "object" &&
-        value !== null &&
-        "gte" in value &&
-        "lte" in value
-      ) {
-        conditions.push({
-          key,
-          range: {
-            gte: value.gte,
-            lte: value.lte,
-          },
-        });
-      } else {
-        conditions.push({
-          key,
-          match: {
-            value,
-          },
-        });
+  private async ensureClient(): Promise<void> {
+    if (this.client) return;
+    const config = this.config;
+    if (config.client) {
+      this.client = config.client;
+      return;
+    }
+    const params: Record<string, any> = {};
+    if (config.apiKey) {
+      params.apiKey = config.apiKey;
+    }
+    if (config.url) {
+      params.url = config.url;
+      // Workaround for qdrant/qdrant-js#59: explicitly pass port to avoid "Illegal host" error
+      try {
+        const parsedUrl = new URL(config.url);
+        params.port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : 6333;
+      } catch (_) {
+        params.port = 6333;
+      }
+    }
+    if (config.host && config.port) {
+      params.host = config.host;
+      params.port = config.port;
+    }
+    if (!Object.keys(params).length) {
+      params.path = config.path;
+      if (!config.onDisk && config.path) {
+        if (
+          fs.existsSync(config.path) &&
+          fs.statSync(config.path).isDirectory()
+        ) {
+          fs.rmSync(config.path, { recursive: true });
+        }
       }
     }
 
-    return conditions.length ? { must: conditions } : undefined;
+    const sdk = await loadPeer(
+      "@qdrant/js-client-rest",
+      "Qdrant vector store",
+      () => import("@qdrant/js-client-rest"),
+    );
+    this.client = new sdk.QdrantClient(params);
+  }
+
+  /**
+   * Build a single field condition from a key-value filter pair.
+   * Supports enhanced filter syntax with comparison operators.
+   */
+  private buildFieldCondition(key: string, value: any): QdrantCondition | null {
+    // Handle non-dict values
+    if (typeof value !== "object" || value === null) {
+      // Wildcard: match any value - skip this filter
+      if (value === "*") {
+        return null;
+      }
+      // Simple equality
+      return { key, match: { value } };
+    }
+
+    // Handle array shorthand: {"field": ["a", "b"]} treated as "in" operator
+    if (Array.isArray(value)) {
+      return { key, match: { any: value } };
+    }
+
+    const ops = Object.keys(value);
+    const rangeOps = ["gt", "gte", "lt", "lte"];
+    const hasRangeOps = ops.some((op) => rangeOps.includes(op));
+    const nonRangeOps = ops.filter((op) => !rangeOps.includes(op));
+
+    // Handle range operators
+    if (hasRangeOps) {
+      if (nonRangeOps.length > 0) {
+        throw new Error(
+          `Cannot mix range operators (${ops.filter((o) => rangeOps.includes(o)).join(", ")}) ` +
+            `with non-range operators (${nonRangeOps.join(", ")}) for field '${key}'. ` +
+            `Use AND to combine them as separate conditions.`,
+        );
+      }
+      const range: Record<string, number | string> = {};
+      for (const op of rangeOps) {
+        if (op in value) {
+          range[op] = value[op];
+        }
+      }
+      return { key, range };
+    }
+
+    // Handle comparison operators
+    if ("eq" in value) {
+      return { key, match: { value: value.eq } };
+    }
+    if ("ne" in value) {
+      return { key, match: { except: [value.ne] } };
+    }
+    if ("in" in value) {
+      return { key, match: { any: value.in } };
+    }
+    if ("nin" in value) {
+      return { key, match: { except: value.nin } };
+    }
+    if ("contains" in value || "icontains" in value) {
+      const text = value.contains || value.icontains;
+      return { key, match: { text } };
+    }
+
+    // Unknown operator - treat as nested object for simple match
+    const supportedOps = [
+      "eq",
+      "ne",
+      "gt",
+      "gte",
+      "lt",
+      "lte",
+      "in",
+      "nin",
+      "contains",
+      "icontains",
+    ];
+    throw new Error(
+      `Unsupported filter operator(s) for field '${key}': ${ops.join(", ")}. ` +
+        `Supported operators: ${supportedOps.join(", ")}`,
+    );
+  }
+
+  /**
+   * Create a Filter object from the provided filters.
+   * Supports logical operators (AND, OR, NOT) and comparison operators.
+   */
+  private createFilter(filters?: SearchFilters): QdrantFilter | undefined {
+    if (!filters || Object.keys(filters).length === 0) return undefined;
+
+    // Normalize $or/$not/$and → OR/NOT/AND and deduplicate
+    const normalized: Record<string, any> = {};
+    for (const [key, value] of Object.entries(filters)) {
+      const normKey = KEY_MAP[key] || key;
+      if (!(normKey in normalized)) {
+        normalized[normKey] = value;
+      }
+    }
+
+    const must: (QdrantCondition | QdrantFilter)[] = [];
+    const should: (QdrantCondition | QdrantFilter)[] = [];
+    const mustNot: (QdrantCondition | QdrantFilter)[] = [];
+
+    for (const [key, value] of Object.entries(normalized)) {
+      // Handle logical operators
+      if (key === "AND" || key === "OR" || key === "NOT") {
+        if (!Array.isArray(value)) {
+          throw new Error(
+            `${key} filter value must be a list of filter dicts, got ${typeof value}`,
+          );
+        }
+        for (let i = 0; i < value.length; i++) {
+          const item = value[i];
+          if (
+            typeof item !== "object" ||
+            item === null ||
+            Array.isArray(item)
+          ) {
+            throw new Error(
+              `${key} filter list item at index ${i} must be a dict, got ${typeof item}`,
+            );
+          }
+        }
+
+        if (key === "AND") {
+          for (const sub of value) {
+            const built = this.createFilter(sub);
+            if (built) {
+              must.push(built);
+            }
+          }
+        } else if (key === "OR") {
+          for (const sub of value) {
+            const built = this.createFilter(sub);
+            if (built) {
+              should.push(built);
+            }
+          }
+        } else if (key === "NOT") {
+          for (const sub of value) {
+            const built = this.createFilter(sub);
+            if (built) {
+              mustNot.push(built);
+            }
+          }
+        }
+      } else {
+        // Regular field condition
+        const condition = this.buildFieldCondition(key, value);
+        if (condition !== null) {
+          must.push(condition);
+        }
+      }
+    }
+
+    if (must.length === 0 && should.length === 0 && mustNot.length === 0) {
+      return undefined;
+    }
+
+    return {
+      must: must.length > 0 ? must : undefined,
+      should: should.length > 0 ? should : undefined,
+      must_not: mustNot.length > 0 ? mustNot : undefined,
+    };
   }
 
   async insert(
@@ -104,6 +282,7 @@ export class Qdrant implements VectorStore {
     ids: string[],
     payloads: Record<string, any>[],
   ): Promise<void> {
+    await this.initialize();
     const points = vectors.map((vector, idx) => ({
       id: ids[idx],
       vector: vector,
@@ -115,16 +294,21 @@ export class Qdrant implements VectorStore {
     });
   }
 
+  async keywordSearch(): Promise<null> {
+    return null;
+  }
+
   async search(
     query: number[],
-    limit: number = 5,
+    topK: number = 5,
     filters?: SearchFilters,
   ): Promise<VectorStoreResult[]> {
+    await this.initialize();
     const queryFilter = this.createFilter(filters);
     const results = await this.client.search(this.collectionName, {
       vector: query,
       filter: queryFilter,
-      limit,
+      limit: topK,
     });
 
     return results.map((hit) => ({
@@ -135,6 +319,7 @@ export class Qdrant implements VectorStore {
   }
 
   async get(vectorId: string): Promise<VectorStoreResult | null> {
+    await this.initialize();
     const results = await this.client.retrieve(this.collectionName, {
       ids: [vectorId],
       with_payload: true,
@@ -153,6 +338,7 @@ export class Qdrant implements VectorStore {
     vector: number[],
     payload: Record<string, any>,
   ): Promise<void> {
+    await this.initialize();
     const point = {
       id: vectorId,
       vector: vector,
@@ -165,21 +351,24 @@ export class Qdrant implements VectorStore {
   }
 
   async delete(vectorId: string): Promise<void> {
+    await this.initialize();
     await this.client.delete(this.collectionName, {
       points: [vectorId],
     });
   }
 
   async deleteCol(): Promise<void> {
+    await this.initialize();
     await this.client.deleteCollection(this.collectionName);
   }
 
   async list(
     filters?: SearchFilters,
-    limit: number = 100,
+    topK: number = 100,
   ): Promise<[VectorStoreResult[], number]> {
+    await this.initialize();
     const scrollRequest = {
-      limit,
+      limit: topK,
       filter: this.createFilter(filters),
       with_payload: true,
       with_vectors: false,
@@ -210,23 +399,10 @@ export class Qdrant implements VectorStore {
   }
 
   async getUserId(): Promise<string> {
+    await this.initialize();
     try {
-      // First check if the collection exists
-      const collections = await this.client.getCollections();
-      const userCollectionExists = collections.collections.some(
-        (col: { name: string }) => col.name === "memory_migrations",
-      );
-
-      if (!userCollectionExists) {
-        // Create the collection if it doesn't exist
-        await this.client.createCollection("memory_migrations", {
-          vectors: {
-            size: 1,
-            distance: "Cosine",
-            on_disk: false,
-          },
-        });
-      }
+      // Ensure collection exists (idempotent — handles race conditions)
+      await this.ensureCollection("memory_migrations", 1);
 
       // Now try to get the user ID
       const result = await this.client.scroll("memory_migrations", {
@@ -261,6 +437,7 @@ export class Qdrant implements VectorStore {
   }
 
   async setUserId(userId: string): Promise<void> {
+    await this.initialize();
     try {
       // Get existing point ID
       const result = await this.client.scroll("memory_migrations", {
@@ -286,66 +463,63 @@ export class Qdrant implements VectorStore {
     }
   }
 
-  async initialize(): Promise<void> {
+  private async ensureCollection(name: string, size: number): Promise<void> {
     try {
-      // Create collection if it doesn't exist
-      const collections = await this.client.getCollections();
-      const exists = collections.collections.some(
-        (c) => c.name === this.collectionName,
-      );
-
-      if (!exists) {
-        try {
-          await this.client.createCollection(this.collectionName, {
-            vectors: {
-              size: this.dimension,
-              distance: "Cosine",
-            },
-          });
-        } catch (error: any) {
-          // Handle case where collection was created between our check and create
-          if (error?.status === 409) {
-            // Collection already exists - verify it has the correct configuration
-            const collectionInfo = await this.client.getCollection(
-              this.collectionName,
-            );
+      await this.client.createCollection(name, {
+        vectors: {
+          size,
+          distance: "Cosine",
+        },
+      });
+    } catch (error: any) {
+      if (
+        error?.status === 409 ||
+        error?.status === 401 ||
+        error?.status === 403
+      ) {
+        // Collection already exists — verify configuration for the main collection
+        if (name === this.collectionName) {
+          try {
+            const collectionInfo = await this.client.getCollection(name);
             const vectorConfig = collectionInfo.config?.params?.vectors;
 
-            if (!vectorConfig || vectorConfig.size !== this.dimension) {
+            if (vectorConfig && vectorConfig.size !== size) {
               throw new Error(
-                `Collection ${this.collectionName} exists but has wrong configuration. ` +
-                  `Expected vector size: ${this.dimension}, got: ${vectorConfig?.size}`,
+                `Collection ${name} exists but has wrong vector size. ` +
+                  `Expected: ${size}, got: ${vectorConfig.size}`,
               );
             }
-            // Collection exists with correct configuration - we can proceed
-          } else {
-            throw error;
+          } catch (verifyError: any) {
+            // Re-throw dimension mismatch errors
+            if (verifyError?.message?.includes("wrong vector size")) {
+              throw verifyError;
+            }
+            // Transient errors (e.g. 500 while collection is being committed)
+            // are non-fatal — the collection exists per the 409.
+            console.warn(
+              `Collection '${name}' exists (409) but dimension verification failed: ${verifyError?.message || verifyError}. Proceeding anyway.`,
+            );
           }
         }
+        // Otherwise collection exists and is fine — proceed
+      } else {
+        throw error;
       }
+    }
+  }
 
-      // Create memory_migrations collection if it doesn't exist
-      const userExists = collections.collections.some(
-        (c) => c.name === "memory_migrations",
-      );
+  async initialize(): Promise<void> {
+    if (!this._initPromise) {
+      this._initPromise = this._doInitialize();
+    }
+    return this._initPromise;
+  }
 
-      if (!userExists) {
-        try {
-          await this.client.createCollection("memory_migrations", {
-            vectors: {
-              size: 1, // Minimal size since we only store user_id
-              distance: "Cosine",
-            },
-          });
-        } catch (error: any) {
-          // Handle case where collection was created between our check and create
-          if (error?.status === 409) {
-            // Collection already exists - we can proceed
-          } else {
-            throw error;
-          }
-        }
-      }
+  private async _doInitialize(): Promise<void> {
+    try {
+      await this.ensureClient();
+      await this.ensureCollection(this.collectionName, this.dimension);
+      await this.ensureCollection("memory_migrations", 1);
     } catch (error) {
       console.error("Error initializing Qdrant:", error);
       throw error;

@@ -134,6 +134,97 @@ def reset_memory_client():
     _config_hash = None
 
 
+# --- LLM provider config factories ---
+
+def _build_ollama_llm_config(model, api_key, base_url, ollama_base_url):
+    config = {"model": model or "llama3.1:latest"}
+    # OLLAMA_BASE_URL takes precedence, then LLM_BASE_URL, then default
+    config["ollama_base_url"] = ollama_base_url or base_url or "http://localhost:11434"
+    return config
+
+
+def _build_openai_llm_config(model, api_key, base_url, ollama_base_url):
+    config = {
+        "model": model or "gpt-4o-mini",
+        "api_key": api_key or "env:OPENAI_API_KEY",
+    }
+    if base_url:
+        config["openai_base_url"] = base_url
+    return config
+
+
+_LLM_CONFIG_FACTORIES = {
+    "ollama": _build_ollama_llm_config,
+    "openai": _build_openai_llm_config,
+}
+
+
+def _create_llm_config(provider, model, api_key, base_url, ollama_base_url):
+    """Build LLM config using registered provider factory or generic fallback."""
+    base_config = {
+        "temperature": 0.1,
+        "max_tokens": 2000,
+    }
+
+    factory = _LLM_CONFIG_FACTORIES.get(provider)
+    if factory:
+        base_config.update(factory(model, api_key, base_url, ollama_base_url))
+    else:
+        # Generic provider (anthropic, groq, together, deepseek, etc.)
+        if not model:
+            raise ValueError(
+                f"LLM_MODEL environment variable is required when using LLM_PROVIDER='{provider}'. "
+                f"Set LLM_MODEL to a valid model name for the '{provider}' provider."
+            )
+        base_config["model"] = model
+        if api_key:
+            base_config["api_key"] = api_key
+
+    return base_config
+
+
+# --- Embedder provider config factories ---
+
+def _build_ollama_embedder_config(model, api_key, base_url, ollama_base_url, llm_base_url):
+    config = {"model": model or "nomic-embed-text"}
+    config["ollama_base_url"] = base_url or ollama_base_url or llm_base_url or "http://localhost:11434"
+    return config
+
+
+def _build_openai_embedder_config(model, api_key, base_url, ollama_base_url, llm_base_url):
+    config = {
+        "model": model or "text-embedding-3-small",
+        "api_key": api_key or "env:OPENAI_API_KEY",
+    }
+    if base_url:
+        config["openai_base_url"] = base_url
+    return config
+
+
+_EMBEDDER_CONFIG_FACTORIES = {
+    "ollama": _build_ollama_embedder_config,
+    "openai": _build_openai_embedder_config,
+}
+
+
+def _create_embedder_config(provider, model, api_key, base_url, ollama_base_url, llm_base_url):
+    """Build embedder config using registered provider factory or generic fallback."""
+    factory = _EMBEDDER_CONFIG_FACTORIES.get(provider)
+    if factory:
+        config = factory(model, api_key, base_url, ollama_base_url, llm_base_url)
+    else:
+        if not model:
+            raise ValueError(
+                f"EMBEDDER_MODEL environment variable is required when using EMBEDDER_PROVIDER='{provider}'. "
+                f"Set EMBEDDER_MODEL to a valid model name for the '{provider}' provider."
+            )
+        config = {"model": model}
+        if api_key:
+            config["api_key"] = api_key
+
+    return config
+
+
 def get_default_memory_config():
     """Get default memory client configuration with sensible defaults."""
     # Detect vector store based on environment variables
@@ -237,7 +328,39 @@ def get_default_memory_config():
         })
     
     print(f"Auto-detected vector store: {vector_store_provider} with config: {vector_store_config}")
-    
+
+    # Detect LLM provider from environment variables
+    llm_provider = os.environ.get('LLM_PROVIDER', 'openai').lower()
+    llm_model = os.environ.get('LLM_MODEL')
+    llm_api_key = os.environ.get('LLM_API_KEY')
+    llm_base_url = os.environ.get('LLM_BASE_URL')
+    ollama_base_url = os.environ.get('OLLAMA_BASE_URL')
+
+    llm_config = _create_llm_config(
+        provider=llm_provider,
+        model=llm_model,
+        api_key=llm_api_key,
+        base_url=llm_base_url,
+        ollama_base_url=ollama_base_url,
+    )
+    print(f"Auto-detected LLM provider: {llm_provider}")
+
+    # Detect embedder provider from environment variables
+    embedder_provider = os.environ.get('EMBEDDER_PROVIDER', llm_provider if llm_provider == 'ollama' else 'openai').lower()
+    embedder_model = os.environ.get('EMBEDDER_MODEL')
+    embedder_api_key = os.environ.get('EMBEDDER_API_KEY')
+    embedder_base_url = os.environ.get('EMBEDDER_BASE_URL')
+
+    embedder_config = _create_embedder_config(
+        provider=embedder_provider,
+        model=embedder_model,
+        api_key=embedder_api_key,
+        base_url=embedder_base_url,
+        ollama_base_url=ollama_base_url,
+        llm_base_url=llm_base_url,
+    )
+    print(f"Auto-detected embedder provider: {embedder_provider}")
+
     return {
         "vector_store": {
             "provider": vector_store_provider,
