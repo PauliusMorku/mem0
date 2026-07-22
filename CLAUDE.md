@@ -47,6 +47,13 @@ installs 2.x and breaks `search_memory` at runtime. Remove the pin only after
 upstream fixes that call site AND 2.x compatibility with existing Qdrant
 payloads (written by 1.x) is verified.
 
+## Recurring Backups
+
+`backup-scripts/weekly-backup.sh` backs up the sqlite DB (online backup) and a
+checksum-verified Qdrant snapshot to `/mnt/data/workspace/backups/openmemory-weekly/`,
+keeping the last 6. Installed in the `pm` user crontab on raspi5 (Sundays 03:30,
+log: `backup.log` in the same directory). Restore commands are in the script header.
+
 ## Upgrade History
 
 - **2026-07-22:** Merged `upstream/main` (through `dd5f7e39`, merge commit
