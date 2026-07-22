@@ -22,8 +22,42 @@ Branch: `rpi5-ollama`
 | `openmemory/api/app/utils/categorization.py` | Uses Groq client directly for categorization |
 | `openmemory/api/app/mcp_server.py` | 30s timeout on memory add operations |
 | `openmemory/api/app/routers/memories.py` | 30s timeout on memory add operations |
-| `openmemory/docker-compose.yml` | Removed API_KEY env, bind-mount Qdrant data |
+| `openmemory/docker-compose.yml` | Removed API_KEY env, bind-mount Qdrant data, qdrant pinned to `v1.17.0-16k` |
+| `openmemory/api/requirements.txt` | `mem0ai` pinned to `>=1.0.4,<2.0.0` (see below) |
 | `.gitignore` | Added `openmemory/qdrant-data/` |
+
+## MCP Endpoints (as of 2026-07-22 upstream merge)
+
+The server exposes both MCP transports:
+
+- **Streamable HTTP (preferred):** `http://<pi-ip>:8765/mcp/<client>/http/<user>`
+  e.g. `http://<pi-ip>:8765/mcp/claude-code/http/pm`. Stateless, JSON responses.
+  Not affected by the SSE reconnect bug.
+- **SSE (deprecated, kept for old clients):** `http://<pi-ip>:8765/mcp/<client>/sse/<user>`.
+  Known bug: after a dropped SSE connection reconnects, tool calls hit an
+  uninitialized session → `-32602` / "Received request before initialization
+  was complete". Migrate clients to the `/http/` URL instead.
+
+## mem0ai Version Pin — do not unpin blindly
+
+`openmemory/api/requirements.txt` pins `mem0ai>=1.0.4,<2.0.0`. mem0ai 2.x renamed
+`vector_store.search(limit=)` to `top_k=`, and upstream's `mcp_server.py` still
+passes `limit=10` (unfixed upstream as of 2026-07-22), so an unpinned build
+installs 2.x and breaks `search_memory` at runtime. Remove the pin only after
+upstream fixes that call site AND 2.x compatibility with existing Qdrant
+payloads (written by 1.x) is verified.
+
+## Upgrade History
+
+- **2026-07-22:** Merged `upstream/main` (through `dd5f7e39`, merge commit
+  `ab0124b3`) — brought in the streamable-HTTP MCP endpoint (upstream #4122)
+  and dependency security bumps (mcp SDK 1.28.1, starlette, python-dotenv).
+  All local Groq/Ollama customizations preserved; upstream's new `infer` tool
+  param kept but defaulted to `False` (local no-fact-extraction behavior).
+  UI image NOT rebuilt (upstream UI changes were lockfile-only security bumps).
+  Pre-upgrade backups (sqlite DB, Qdrant snapshot, configs, old image tagged
+  `mem0/openmemory-mcp:backup-2026-07-22`, pre-merge git HEAD):
+  `/mnt/data/workspace/backups/openmemory-upgrade-2026-07-22/`
 
 ## Custom Fact Extraction Prompt
 
@@ -56,5 +90,6 @@ Rebuild after code changes:
 docker compose up -d --build openmemory-mcp
 ```
 
-**After rebuilding**, restart any Claude Code sessions connected via MCP —
-the SSE connection goes stale and produces `MCP error -32602` until reconnected.
+**After rebuilding**, clients connected via the deprecated SSE endpoint go stale
+and produce `MCP error -32602` until their session restarts. Clients on the
+streamable-HTTP `/http/` endpoint are stateless and unaffected.
