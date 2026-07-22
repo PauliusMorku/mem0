@@ -7,7 +7,10 @@ psycopg2-binary>=2.9.0
 python-multipart>=0.0.27
 urllib3>=2.7.0
 fastapi-pagination>=0.12.0
-mem0ai>=0.1.92
+# mem0ai 2.x renamed VectorStoreBase.search(limit=) to top_k= and is untested with
+# this deployment's data; the MCP server's direct vector_store.search(limit=10)
+# call requires the 1.x API. Old image ran 1.0.4.
+mem0ai>=1.0.4,<2.0.0
 openai>=1.40.0
 groq>=1.0.0
 mcp[cli]>=1.25.4
